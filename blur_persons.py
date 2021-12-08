@@ -20,6 +20,8 @@ import platform
 import tempfile
 import subprocess
 import collections
+import datetime
+import shutil
 
 import numpy as np
 
@@ -31,6 +33,11 @@ try:
     import tensorflow.compat.v1 as tf
     if version.parse(tf.__version__) < version.parse('1.5'):
         raise ImportError('Please upgrade your tensorflow installation to v1.5.0 or newer!')
+    #ADDED to limit GPU memory allocation
+    #gpus = tf.config.experimental.list_physical_devices('GPU')
+    #for gpu in gpus:
+    #    tf.config.experimental.set_memory_growth(gpu, True)
+
 except:
     print('tensorflow.compat.v1 not available')
 
@@ -215,10 +222,11 @@ def save_and_copy_exif(image, source_path, save_path, *args, **kwargs):
     base, ext = os.path.splitext(save_path)
     tmp_path = base + ".tmp" + ext
     image.save(tmp_path, *args, **kwargs)
-    subprocess.check_call([
-        "exiftool", "-overwrite_original", "-TagsFromFile",
-         source_path, tmp_path])
-    os.rename(tmp_path, save_path)
+    #subprocess.check_call([
+    #    "exiftool", "-overwrite_original", "-TagsFromFile",
+    #     source_path, tmp_path])
+    #os.rename(tmp_path, os.path.abspath(save_path))
+    shutil.move(os.path.abspath(tmp_path), os.path.abspath(save_path))
 
 def split_area(area_width, area_height, box_width, box_height, is_360=None, overlap_factor=0.15):
     """
@@ -317,8 +325,6 @@ def get_image_quality(image_path, default=None):
         pass
     return default
 
-
-
 def blur_in_files(files, model, classes, blur, dest, suffix, dezoom, quality, mask, lite):
     config = MODEL_CONFIGS[model]
     if lite:
@@ -345,13 +351,15 @@ def blur_in_files(files, model, classes, blur, dest, suffix, dezoom, quality, ma
         print("load model", download_path)
 
         model = DeepLabModel(download_path)
-
+    
+    full_start_time = datetime.datetime.now()
     blur_colormap = np.zeros((512,4), dtype=int)
     for clazz in classes:
         index = config.label_names.index(clazz)
         blur_colormap[index] = (255,255,255,255)
-
+    
     for filename in files:
+        start_time = datetime.datetime.now()
         new_filename = get_new_filename(filename, suffix, dest)
         if mask:
             new_filename = new_filename.rsplit('.', 1)[0] + '.png'
@@ -363,6 +371,22 @@ def blur_in_files(files, model, classes, blur, dest, suffix, dezoom, quality, ma
         else:
             this_quality = get_image_quality(filename, "maximum") if quality is None else quality
             save_and_copy_exif(new_image, filename, new_filename, quality=this_quality)
+        print("image classification done in {} seconds".format(
+        (datetime.datetime.now() - start_time).total_seconds()))
+    
+    print("Full images classification done in {} seconds".format(
+        (datetime.datetime.now() - full_start_time).total_seconds()))
+
+def limitgpu(maxmem):
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+		# Restrict TensorFlow to only allocate a fraction of GPU memory
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_virtual_device_configuration(gpu, [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=maxmem)])
+        except RuntimeError as e:
+            # Virtual devices must be set before GPUs have been initialized
+            print(e)
 
 def check_dir(name):
     assert os.path.isdir(name)
@@ -382,7 +406,7 @@ def int_or_color(value):
         pass
     return ImageColor.getrgb(value)
 
-def main(args):
+def main():
     model="xception_coco_voctrainval"
     config=MODEL_CONFIGS[model]
     parser = argparse.ArgumentParser(
@@ -390,14 +414,14 @@ def main(args):
     parser.add_argument("-s", "--suffix", default=None,
         help="suffix for modified image filename")
     parser.add_argument("-d", "--dest", type=check_dir, default=None,
-        help="destination directory for modiffied image")
+        help="destination directory for modified image")
     parser.add_argument("-z", "--dezoom", type=float, default=1.0,
         help="dezoom factor (e.g. 2.0) for faster search in smaller image (default=1 for search at original resolution)")
     parser.add_argument("-q", "--quality", type=may_be_int,
         help="quality option of saved images (e.g. 75 or maximum)")
     parser.add_argument("-b", "--blur", default=30, type=int_or_color,
         help="blur radius in pixel, or a flat color name or #RGB")
-    parser.add_argument("-c", "--class", action="append",
+    parser.add_argument("-c", "--class", nargs="+",
         choices=config.label_names,
         help="add a class of items to blur (the default is 'person' if no class is specified)")
     parser.add_argument("-m", "--mask", action="store_true",
@@ -405,7 +429,9 @@ def main(args):
     parser.add_argument("-l", "--lite", action="store_true",
         help="Use Tensorflow Lite in place of Tensorflow.")
     parser.add_argument("input", nargs="+")
-    options = parser.parse_args(args[1:])
+    options = parser.parse_args()
+    if os.path.isdir(options.input[0]):
+        options.input = [os.path.join(os.path.abspath(options.input[0]), file) for file in os.listdir(options.input[0]) if file.lower().endswith(".jpg")]
     if options.dest is None and options.suffix is None:
         options.suffix = "-mask" if options.mask else "-blurred"
     classes = getattr(options, "class")
@@ -427,5 +453,8 @@ def main(args):
     )
 
 if __name__ == '__main__':
-    main(sys.argv)
+    #testing limiting memory
+    #limitgpu(2500) 
+
+    main()
 
