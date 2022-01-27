@@ -427,11 +427,15 @@ def main():
     parser.add_argument("-l", "--lite", action="store_true",
         help="Use Tensorflow Lite in place of Tensorflow.")
     parser.add_argument("input", nargs="+")
+    parser.add_argument("-o", "--overwrite", action="store_true",
+        help="Overwrite original image")
     options = parser.parse_args()
     if os.path.isdir(options.input[0]):
         options.input = [os.path.join(os.path.abspath(options.input[0]), file) for file in os.listdir(options.input[0]) if file.lower().endswith(".jpg")]
     if options.dest is None and options.suffix is None:
         options.suffix = "-mask" if options.mask else "-blurred"
+    if options.overwrite == True and options.mask == False:
+        options.suffix = ""
     classes = getattr(options, "class")
     if classes is None:
         classes = ["person"]
