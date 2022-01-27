@@ -4,3 +4,4 @@
 /xception_coco_voctrainaug
 /xception_coco_voctrainval
 /xception_cityscapes_trainfine
+*.bak
