@@ -12,6 +12,7 @@ import io
 import sys
 import math
 import glob
+import time
 import urllib.request
 import tarfile
 import os.path
@@ -24,12 +25,25 @@ import datetime
 import shutil
 import piexif
 from pathlib import Path
+from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String, Boolean, update, select
+from sqlalchemy.orm import declarative_base, Session
 
 import numpy as np
 
 from PIL import Image, ImageDraw, ImageFilter, ImageColor
 
 from packaging import version
+session=""
+Base = declarative_base()
+class Picture(Base):
+    __tablename__ = 'picture_list'
+    id = Column(Integer, primary_key=True)
+    abs_path = Column(String)
+    rel_path = Column(String)
+    processing = Column(Boolean)
+    processing_start_ts = Column(Integer)
+    processed = Column(Boolean)
+    success = Column(Boolean)
 
 try:
     import tensorflow.compat.v1 as tf
@@ -324,7 +338,23 @@ def get_image_quality(image_path, default=None):
         pass
     return default
 
-def blur_in_files(files, model, classes, blur, dest, suffix, dezoom, quality, mask, lite):
+def get_picture():
+    next_img = session.query(Picture).filter(Picture.processing == False, Picture.processed == False).with_for_update().first()
+    if next_img is not None:
+        next_img.processing = True
+        next_img.processing_start_ts = int(time.time())
+        session.flush()
+        session.commit()
+    return next_img
+
+def set_proc_picture(picture):
+    picture.processed = True
+    picture.processing = False
+    picture.success = True
+    session.flush()
+    session.commit()
+
+def blur_in_files(database, model, classes, blur, dest, suffix, dezoom, quality, mask, lite):
     config = MODEL_CONFIGS[model]
     if lite:
         # https://coral.ai/models/
@@ -357,19 +387,26 @@ def blur_in_files(files, model, classes, blur, dest, suffix, dezoom, quality, ma
         index = config.label_names.index(clazz)
         blur_colormap[index] = (255,255,255,255)
     
-    for filename in files:
+    #for filename in files:
+    while True:
+        picture = get_picture()
+        if picture is None:
+            break #no image to process
+        pic_abs_path = os.path.abspath(os.path.join(os.path.dirname(database), picture.rel_path))
+
         start_time = datetime.datetime.now()
-        new_filename = get_new_filename(filename, suffix, dest)
+        new_filename = get_new_filename(pic_abs_path, suffix, dest)
         if mask:
             new_filename = new_filename.rsplit('.', 1)[0] + '.png'
-        print(filename, "->", new_filename)
-        original_image = Image.open(filename)
+        print(picture.rel_path, "->", new_filename)
+        original_image = Image.open(pic_abs_path)
         new_image = blur_from_model_and_colormap(original_image, model, blur_colormap, blur, dezoom, mask)
         if mask:
             new_image.save(new_filename)
         else:
-            this_quality = get_image_quality(filename, "maximum") if quality is None else quality
-            save_and_copy_exif(new_image, filename, new_filename, quality=this_quality)
+            this_quality = get_image_quality(pic_abs_path, "maximum") if quality is None else quality
+            save_and_copy_exif(new_image, pic_abs_path, new_filename, quality=this_quality)
+        set_proc_picture(picture)
         print("image classification done in {} seconds".format(
         (datetime.datetime.now() - start_time).total_seconds()))
     
@@ -427,27 +464,36 @@ def main():
         help="Save the mask inside of blur")
     parser.add_argument("-l", "--lite", action="store_true",
         help="Use Tensorflow Lite in place of Tensorflow.")
-    parser.add_argument("input", nargs="+")
+    parser.add_argument("--input", nargs="+", help="Path to images you want to blur")
     parser.add_argument("-o", "--overwrite", action="store_true",
         help="Overwrite original image")
     parser.add_argument("-r", "--recursive", action="store_true",
         help="Process images in subfolder too")
+    parser.add_argument("--database", help="path to the database containing the pictures informations")
     options = parser.parse_args()
+    '''
     if options.recursive and os.path.isdir(options.input[0]):
         options.input = [file for file in Path(options.input[0]).rglob('*.[Jj][Pp][Gg]')]
-    elif options.recursive is False and os.path.isdir(options.input[0]):
+    elif options.recursive is False and options.input[0] is not None and os.path.isdir(options.input[0]):
         options.input = [os.path.join(os.path.abspath(options.input[0]), file) for file in os.listdir(options.input[0]) if file.lower().endswith(".jpg")]
+        '''
     if options.dest is None and options.suffix is None:
         options.suffix = "-mask" if options.mask else "-blurred"
     if options.overwrite is True and options.mask is False:
         options.suffix = ""
+    if os.path.isfile(options.database) :
+        print("Loading the database...")
+        engine = create_engine("sqlite+pysqlite:///" + os.path.abspath(options.database), echo=False, future=True)
+        global session
+        session = Session(engine)
+        Base.metadata.create_all(engine)
     classes = getattr(options, "class")
     if classes is None:
         classes = ["person"]
     if options.mask:
         options.blur = 'white'
     blur_in_files(
-        files=options.input,
+        database=options.database,
         model=model,
         classes=classes,
         blur=options.blur,
