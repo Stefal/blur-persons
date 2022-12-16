@@ -238,7 +238,9 @@ def save_and_copy_exif(image, source_path, save_path, *args, **kwargs):
     base, ext = os.path.splitext(save_path)
     tmp_path = base + ".tmp" + ext
     image.save(tmp_path, *args, **kwargs)
-    piexif.transplant(str(source_path), str(tmp_path))
+    #piexif.transplant(str(source_path), str(tmp_path))
+    subprocess.check_call([
+        "exiftool", "-overwrite_original", "-TagsFromFile", str(source_path), str(tmp_path)])
     shutil.move(os.path.abspath(tmp_path), os.path.abspath(save_path))
 
 def split_area(area_width, area_height, box_width, box_height, is_360=None, overlap_factor=0.15):
